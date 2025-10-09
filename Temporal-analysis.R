@@ -1,14 +1,7 @@
 ############################################################
 # SPATIOTEMPORAL OUTBREAK ANALYSIS USING INLA
-# Example: Burkina Faso outbreak data
-# Author: [Your Name]
-# Date: [Insert Date]
 ############################################################
 
-
-##############################
-# 1. LOAD LIBRARIES
-##############################
 library(INLA)
 library(ggplot2)
 library(mgcv)
@@ -22,7 +15,7 @@ library(scales)  # for plogis
 
 
 ##############################
-# 2. LOAD AND PREPARE DATA
+# 1. LOAD AND PREPARE DATA
 ##############################
 setwd("~/INLA project")
 
@@ -39,7 +32,7 @@ newdata <- newdata[myvars]
 
 
 ##############################
-# 3. DATA CLEANING & TYPE CONVERSION
+# 2. DATA CLEANING & TYPE CONVERSION
 ##############################
 newdata$week <- as.numeric(newdata$week)
 newdata$outbreak <- as.numeric(newdata$outbreak)
@@ -48,7 +41,7 @@ newdata$year <- as.numeric(newdata$year)
 
 
 ##############################
-# 4. AGGREGATE BY MONTH & CREATE CONTINUOUS MONTH INDEX
+# 3. AGGREGATE BY MONTH & CREATE CONTINUOUS MONTH INDEX
 ##############################
 monthly_data <- newdata %>%
   group_by(year, month, district_country) %>%
@@ -66,7 +59,7 @@ print(head(monthly_data))
 
 
 ############################################################
-# 5. TEMPORAL EFFECTS FOR MONTH – CYCLIC MODELS
+# 4. TEMPORAL EFFECTS FOR MONTH – CYCLIC MODELS
 ############################################################
 
 ### MODEL 1A: RW2 on MONTH (Cyclic)
@@ -118,7 +111,7 @@ summary(ar1_month_cyclic)
 
 
 ############################################################
-# 6. TEMPORAL EFFECTS – CONTINUOUS MONTH MODELS
+# 5. TEMPORAL EFFECTS – CONTINUOUS MONTH MODELS
 ############################################################
 
 ### MODEL 2A: RW2 on CONTINUOUS_MONTH
@@ -170,7 +163,7 @@ summary(ar1_month_cont)
 
 
 ############################################################
-# 7. MODEL COMPARISON TABLE
+# 6. MODEL COMPARISON TABLE
 ############################################################
 dic <- data.frame(
   criteria = c("DIC", "WAIC", "LogCPO"),
@@ -186,7 +179,7 @@ write_xlsx(dic, path = "model_comparison_temporal.xlsx")
 
 
 ############################################################
-# 8. VISUALIZE TEMPORAL EFFECTS (AR1 Continuous Month)
+# 7. VISUALIZE TEMPORAL EFFECTS (AR1 Continuous Month)
 ############################################################
 
 # Extract temporal random effects
