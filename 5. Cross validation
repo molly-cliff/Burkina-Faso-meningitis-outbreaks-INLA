@@ -1,0 +1,218 @@
+##############################################
+# Spatial-Temporal INLA Model for Outbreaks
+# Author: [Your Name]
+# Purpose: Build, evaluate, and validate spatial models 
+#          for outbreak prediction using INLA in Burkina Faso
+##############################################
+
+# ==== Load Required Libraries ====
+library(INLA)
+library(ggplot2)
+library(corrplot)
+library(reshape2)
+library(car)
+library(readxl)
+library(sf)
+library(spdep)
+library(writexl)
+library(dplyr)
+
+
+# ==== 1. Set Working Directory & Load Data ====
+setwd("~/INLA project")
+
+data <- read_excel("expanded_bf_data.xlsx")
+
+# Inspect dataset
+head(data)
+summary(data)
+
+
+# ==== 2. Extract Country and Define Vaccine Introduction Variable ====
+
+n_last <- 12  # Number of characters to extract from district_country
+
+# Extract country name
+data$country <- substr(data$district_country, 
+                       nchar(data$district_country) - n_last + 1, 
+                       nchar(data$district_country))
+
+# Define vaccine introduction (binary variable)
+data$vaccine <- ifelse(
+  (data$district_country == "Sanmatenga Burkina Faso" & data$year_month >= 201009) |
+    (data$country == "Burkina Faso" & data$year_month >= 201052),
+  1, 0
+)
+
+# Create area IDs for spatial modeling
+data$area <- as.numeric(as.factor(data$district_country))
+data$ID.area <- as.numeric(data$area)
+
+
+# ==== 3. Create Neighbourhood Matrix for BYM Spatial Model ====
+
+setwd("~/INLA project")
+shape2 <- st_read("Burkinafaso.shp")        # Load shapefile
+valid_shapefile <- st_is_valid(shape2)       # Validate shapefile geometry
+table(valid_shapefile)
+
+# Convert to Spatial object for spatial dependencies
+shapefile_spatial <- as_Spatial(shape2)
+nb <- poly2nb(shapefile_spatial, queen = TRUE)  # Create adjacency list (queen’s case)
+
+# Plot neighbourhood connections
+Coords <- coordinates(shapefile_spatial)
+plot(shapefile_spatial, col = adjustcolor("lightblue", alpha.f = 0.5), border = "darkgray", lwd = 0.7)
+plot(nb, coords = Coords, add = TRUE, lwd = 1, col = "blue")
+
+# Save adjacency structure for INLA
+nb2INLA("map.adj", nb)
+ken.adj <- paste0(getwd(), "/map.adj")
+
+
+# ==== 4. Create Quadratic and Scaled Covariates ====
+
+data$humidity_square <- (scale(data$humidity)^2)
+data$rainfall_square <- (scale(data$rainfall)^2)
+data$windspeed_square <- (scale(data$windspeed)^2)
+data$north_wind_square <- (scale(data$north_wind)^2)
+data$eastward_wind_square <- (scale(data$eastward_wind)^2)
+data$aod_square <- (scale(data$aod)^2)
+data$temp_square <- (scale(data$temp)^2)
+data$pop_density_square <- (scale(data$pop_density)^2)
+data$secmb_square <- (scale(data$secmb)^2)
+data$total_cropland_square <- (scale(data$total_cropland)^2)
+
+# Create a continuous time variable (month index)
+data <- data %>%
+  arrange(year, month) %>%
+  mutate(continuous_month = (year - min(year)) * 12 + month)
+
+
+# ==== 5. Leave-One-District-Out Cross Validation ====
+
+# Define districts for LOOCV
+districts_to_test <- c("Boulgou Burkina Faso", "Boulkiemdé Burkina Faso",
+                       "Houet Burkina Faso", "Kompienga Burkina Faso",
+                       "Loroum Burkina Faso", "Sanmatenga Burkina Faso",
+                       "Yatenga Burkina Faso")
+
+# Initialize storage
+all_predictions <- data.frame()
+confusion_matrices <- list()
+
+# Loop through each district
+for (leave_out_ADMN2 in districts_to_test) {
+  message("Leaving out: ", leave_out_ADMN2)
+  
+  data_copy <- data
+  
+  # Identify rows for the test district
+  test_indices <- which(data_copy$district_country == leave_out_ADMN2)
+  
+  # Mask outcomes for test district
+  data_copy$outbreak_occur[test_indices] <- NA
+  
+  # ==== Fit INLA Model with Spatial + Temporal Components ====
+  M_loocv <- inla(
+    outbreak_occur ~ humidity_lag2 + aod_square + eastward_wind_lag1 +
+      f(temp, model = 'rw1') +  # Non-linear temperature effect
+      f(area, model = 'besagproper', graph = ken.adj, constr = TRUE,
+        hyper = list(prec = list(prior = "pc.prec", param = c(0.5, 0.01)))) +
+      f(continuous_month, model = 'ar1',
+        hyper = list(theta = list(prior = "pc.cor1", param = c(0.7, 0.7)))),
+    
+    data = data_copy,
+    family = "binomial",
+    control.fixed = list(mean = 0, prec = 1),
+    control.predictor = list(compute = TRUE, link = 1),
+    control.compute = list(dic = FALSE, waic = FALSE)
+  )
+  
+  # ==== Predict on Left-Out District ====
+  predicted_probs <- M_loocv$summary.fitted.values$mean[test_indices]
+  actual_vals <- data$outbreak_occur[test_indices]
+  predicted_classes <- ifelse(predicted_probs > 0.1, 1, 0)
+  
+  # Store results
+  district_preds <- data.frame(
+    ADMN2 = leave_out_ADMN2,
+    actual = actual_vals,
+    predicted_prob = predicted_probs,
+    predicted_class = predicted_classes
+  )
+  
+  all_predictions <- bind_rows(all_predictions, district_preds)
+  
+  # Save confusion matrix for the district
+  cm_table <- table(Actual = actual_vals, Predicted = predicted_classes)
+  confusion_matrices[[leave_out_ADMN2]] <- cm_table
+}
+
+
+# ==== 6. Evaluate Model Performance ====
+
+# Combined predictions
+print("All predictions:")
+print(all_predictions)
+
+# Overall confusion matrix
+overall_conf_mat <- table(
+  Actual = all_predictions$actual,
+  Predicted = all_predictions$predicted_class
+)
+print("Overall confusion matrix:")
+print(overall_conf_mat)
+
+# Correlation between predicted probabilities and actual values
+result <- cor.test(all_predictions$predicted_prob, all_predictions$actual, method = "pearson")
+print(result)
+
+# Root Mean Square Error (RMSE)
+rmse <- sqrt(mean((all_predictions$predicted_prob - all_predictions$actual)^2, na.rm = TRUE))
+cat("RMSE:", round(rmse, 4), "\n")
+
+
+# ==== 7. Fit Final INLA Model on Full Dataset ====
+
+formula_nl <- outbreak_occur ~ humidity_lag2 + aod_square + 
+  eastward_wind_lag1 + 
+  f(temp, model = "rw1") + 
+  f(area, model = 'besagproper', graph = ken.adj, constr = TRUE) +
+  f(continuous_month, model = 'ar1',
+    hyper = list(theta = list(prior = "pc.cor1", param = c(0.7, 0.7))))
+
+final_mod <- inla(
+  formula_nl,
+  family = "binomial",
+  data = data,
+  control.predictor = list(compute = TRUE),
+  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
+)
+
+
+# ==== 8. Model Calibration (Binned Plot) ====
+
+fitted_probs <- final_mod$summary.fitted.values$mean
+obs <- data$outbreak_occur
+
+# Bin predicted probabilities
+n_bins <- 10
+df_cal <- data.frame(obs = obs, pred = fitted_probs)
+df_cal$bin <- cut(df_cal$pred, breaks = quantile(df_cal$pred, probs = seq(0, 1, length.out = n_bins + 1)),
+                  include.lowest = TRUE, labels = FALSE)
+
+# Compute average observed rate per bin
+calibration <- df_cal %>%
+  group_by(bin) %>%
+  summarise(pred_mean = mean(pred, na.rm = TRUE),
+            obs_rate = mean(obs, na.rm = TRUE), .groups = "drop")
+
+# Plot calibration curve
+ggplot(calibration, aes(x = pred_mean, y = obs_rate)) +
+  geom_point(size = 2, color = "blue") +
+  geom_line(color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(x = "Predicted probability", y = "Observed outbreak frequency",
+       title = "Calibration plot for final model") +
+  theme_minimal()
