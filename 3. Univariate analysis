@@ -1,0 +1,192 @@
+library(INLA)
+library(ggplot2)
+library(corrplot)
+library(reshape2)
+library(car)
+library(readxl)
+library(sf)
+library(spdep)
+library(writexl)
+library(dplyr)
+
+# ==== Set Working Directory & Load Data ====
+setwd("~/INLA project")
+
+data <- read_excel("expanded_bf_data.xlsx")
+
+
+# View the first few rows of the data
+head(data)
+summary(data)
+
+
+# Extract country from the last 12 characters of district_country for vaccine introduction variable
+n_last <- 12
+
+
+# Extract country (last 12 characters)
+data$country <- substr(data$district_country, 
+                       nchar(data$district_country) - n_last + 1, 
+                       nchar(data$district_country))
+
+# Define vaccine introduction condition
+data$vaccine <- ifelse(
+  (data$district_country == "Sanmatenga Burkina Faso" & data$year_month >=201009) |
+    (data$country == "Burkina Faso" & data$year_month >= 201052),
+  1, 0
+)
+
+
+# ==== Correlation Analysis ====
+plot_correlation <- function(vars, title = "Correlation Plot") {
+  corr_matrix <- cor(data[, vars], use = "complete.obs")
+  
+  ggplot(melt(corr_matrix), aes(Var1, Var2, fill = value)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limit = c(-1, 1), name = "Correlation") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    coord_fixed() +
+    labs(title = title)
+  
+  corrplot(corr_matrix, method = "color", type = "upper", 
+           addCoef.col = "black", number.cex = 0.7, tl.cex = 0.7,
+           tl.col = "black", col = colorRampPalette(c("#ff0000", "white", "#195696"))(10000))
+}
+
+plot_correlation(c("rainfall", "windspeed", "eastward_wind", "north_wind", "humidity", "aod", "secmb", "total_cropland" ,"pop_density", "vaccine","temp"))
+
+
+# ==== VIF Analysis ====
+
+test_model<-glm(outbreak_occur ~ aod + rainfall  + windspeed + total_cropland + secmb +  pop_density + vaccine + temp, data = data)
+ 
+vif(test_model)
+
+
+test_model<-glm(outbreak_occur ~ aod + humidity + eastward_wind +  windspeed + total_cropland + secmb + vaccine + temp, data = data)
+
+vif(test_model)
+
+
+data$area <- as.numeric(as.factor(data$district_country))
+data$ID.area <- as.numeric(data$area)
+
+####NEIGHBOURHOOD MATRICES FOR BYM MODEL ====
+
+setwd("~/INLA project")
+shape2 <- st_read("Burkinafaso.shp")
+valid_shapefile<-st_is_valid(shape2)
+table(valid_shapefile)
+### Make spatial neighborhood structure
+shapefile_spatial <- as_Spatial(shape2)
+nb <- poly2nb(shapefile_spatial, queen = TRUE)
+
+Coords <- coordinates(shapefile_spatial)
+plot(shapefile_spatial, col = adjustcolor("lightblue", alpha.f = 0.5), border = "darkgray", lwd = 0.7)
+plot(nb, coords = Coords, add = TRUE, lwd = 1, col = "blue")
+
+nb2INLA("map.adj", nb)
+ken.adj <- paste0(getwd(), "/map.adj")
+
+
+
+
+### UNIVARIATE INLA MODELS W/ SPATIAL & TEMPORAL COMPONENTS, VARS STANDARDISED ====
+
+test<-table(data$outbreak_occur)
+test<-as.data.frame(test)
+outbreak<-test[2,2]
+no_outbreak<-test[1,2]
+outbreak<-as.numeric(outbreak)
+no_outbreak<-as.numeric(no_outbreak)
+total<-no_outbreak+outbreak
+
+non_outbreak_weight <- outbreak/total
+outbreak_weight<-1-non_outbreak_weight
+
+weights <- ifelse(data$outbreak_occur == 1, outbreak_weight, non_outbreak_weight) 
+
+
+
+data$humidity_square <- (scale(data$humidity)^2)
+data$rainfall_square <- (scale(data$rainfall)^2)
+data$windspeed_square <- (scale(data$windspeed)^2)
+data$north_wind_square <- (scale(data$north_wind)^2)
+data$eastward_wind_square <- (scale(data$eastward_wind)^2)
+data$aod_square <- (scale(data$aod)^2)
+data$temp_square <- (scale(data$temp)^2)
+data$pop_density_square <- (scale(data$pop_density)^2)
+data$secmb_square <- (scale(data$secmb)^2)
+data$total_cropland_square <- (scale(data$total_cropland)^2)
+
+data<-data %>%
+  arrange(year,month)%>%
+  mutate(continuous_month = (year-min(year))*12+month)
+
+
+
+# Add scaled to variable list
+vars_inla <- c("vaccine", "rainfall_std", "rainfall_square","rainfall_anomaly","rainfall_lag1"
+               ,"rainfall_lag2","humidity_std", "humidity_square","humidity_lag1"
+               ,"humidity_lag2","aod_std", "aod_square","aod_anomaly","aod_lag1"
+               ,"aod_lag2","north_wind_std", "north_wind_square","north_wind_anomaly","north_wind_lag1"
+               ,"north_wind_lag2","eastward_wind_std", "eastward_wind_square","eastward_wind_anomaly","eastward_wind_lag1"
+               ,"eastward_wind_lag2","temp_std", "temp_square","temp_anomaly","temp_lag1"
+               ,"temp_lag2",  "pop_density_square", "pop_density_std","secmb_square", "secmb_std",
+               "total_cropland_square", "total_cropland_std"  )
+# Initialize result container
+posterior_table_m1 <- data.frame()
+
+for (var in vars_inla) {
+  formula <- as.formula(paste(
+    "outbreak_occur ~", var,
+    "+ f(continuous_month, model = 'ar1')",
+    "+ f(area, model = 'besagproper', graph = ken.adj, hyper = 'shyper', constr = TRUE)"
+  ))
+  
+  M5 <- inla(
+    formula,
+    data = data,
+    family = "binomial",
+    control.predictor = list(compute = TRUE),
+    control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE)
+  )
+  
+  effect_row <- M5$summary.fixed[grepl(var, rownames(M5$summary.fixed)), ]
+  lcpocpo_value <- -mean(log(M5$cpo$cpo), na.rm = TRUE)
+  
+  posterior_table_m1 <- rbind(posterior_table_m1, data.frame(
+    covariate = var,
+    estimate = effect_row$mean,
+    CI_1 = effect_row$`0.025quant`,
+    CI_2 = effect_row$`0.975quant`,
+    waic = M5$waic$waic,
+    dic = M5$dic$dic,
+    cpo = lcpocpo_value
+  ))
+  
+  cat("\n--- INLA Model Summary for:", var, "---\n")
+  cat("Mean:", effect_row$mean, "\n")
+  cat("95% CI:", effect_row$`0.025quant`, "-", effect_row$`0.975quant`, "\n")
+  cat("Significant?:", ifelse(effect_row$`0.025quant` > 0 | effect_row$`0.975quant` < 0, "Yes", "No"), "\n")
+  cat("DIC:", M5$dic$dic, ", WAIC:", M5$waic$waic, "\n")
+}
+
+# Final cleanup and export
+rownames(posterior_table_m1) <- 1:nrow(posterior_table_m1)
+print(posterior_table_m1)
+write_xlsx(posterior_table_m1, "inla_covariate_results_with_space_time_refined.xlsx")
+
+# Plot the results using ggplot2
+ggplot(data = posterior_table_m1, aes(y = covariate, x = estimate)) + 
+  geom_pointrange(aes(xmin = CI_1, xmax = CI_2), color = "blue", fill = "white", shape = 22) +
+  theme_minimal() +
+  labs(title = "INLA Model Estimates with 95% Credible Intervals", x = "Estimate", y = "Covariate")
+
+# Compute the odds ratios (OR) by exponentiating the estimates and the CI bounds
+posterior_table_m1_or <- posterior_table_m1
+posterior_table_m1_or[, c("estimate", "CI_1", "CI_2")] <- exp(posterior_table_m1_or[, c("estimate", "CI_1", "CI_2")])
+rownames(posterior_table_m1) <- 1:nrow(posterior_table_m1)
+print(posterior_table_m1)
+write_xlsx(posterior_table_m1, "inla_covariate_results_with_space_time_weighted.xlsx")
