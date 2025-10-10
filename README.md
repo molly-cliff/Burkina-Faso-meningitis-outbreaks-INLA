@@ -9,5 +9,5 @@
 
 4. [Multivariate Analysis](https://github.com/molly-cliff/Burkina-Faso-meningitis-outbreaks-INLA/blob/main/4.%20Multivariate%20analysis.R): Multivariate analysis of climatic factors against outbreak occurance, additionally testing the usage of non-linear efects of variables as well as logit v cloglog link as well as priors set up
   
-5. [Cross validation] (https://github.com/molly-cliff/Burkina-Faso-meningitis-outbreaks-INLA/blob/main/5.%20Cross%20validation): Leave one out cross validation of best performing model against districts in Burkina Faso with >10 outbreak months over 20 year period.
+5. [Cross validation](https://github.com/molly-cliff/Burkina-Faso-meningitis-outbreaks-INLA/blob/main/5.%20Cross%20validation.R): Leave one out cross validation of best performing model against districts in Burkina Faso with >10 outbreak months over 20 year period.
 
