@@ -38,6 +38,34 @@ yearly_probs <- pred_df %>%
     .groups = "drop"
   ) %>%
   mutate(
+
+
+
+    yearly_probs <- pred_df %>%
+  group_by(district_country, year) %>%
+  summarise(
+    # Probability of no outbreak in all months of this year
+    p_no_outbreak_year = prod(1 - fitted, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Probability of at least one outbreak in the year
+    p_year = 1 - p_no_outbreak_year
+  )
+
+yearly_probs
+cumulative_probs <- yearly_probs %>%
+  group_by(district_country) %>%
+  summarise(
+    p_no_outbreak_20yrs = prod(1 - p_year, na.rm = TRUE),
+    p_20years = 1 - p_no_outbreak_20yrs,
+    .groups = "drop"
+  )
+
+cumulative_probs
+# Show result
+df
+# ==========================
     # Probability of at least one outbreak in the year
     p_year = 1 - p_no_outbreak_year
   )
